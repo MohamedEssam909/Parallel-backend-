@@ -4,7 +4,7 @@ const express = require("express");
 const mysql = require("mysql2/promise"); // Promise-based version
 const cors = require("cors");
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 app.use(express.static("public"));
 app.use(express.json());
@@ -1053,9 +1053,7 @@ async function startServer() {
   try {
     await connectDB();
     await connectDB2();
-    app.listen(PORT, () => {
-      console.log(`Server running at http://localhost:${PORT}`);
-    });
+    app.listen(PORT, () => console.log(`Listening on port ${PORT}`));
   } catch (error) {
     console.error('Failed to start server:', error);
   }
