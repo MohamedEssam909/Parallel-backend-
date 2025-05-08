@@ -1038,7 +1038,7 @@ app.delete('/items/delete/:itemId', async (req, res) => {
         tempTotalAmount += itemPrice; 
       }
 
-      const response = await fetch(`http://localhost:3000/user/balance?user_id=${req.body.userId}`); 
+      const response = await fetch(`https://parallel-backend-production.up.railway.app/user/balance?user_id=${req.body.userId}`); 
       const data = await response.json();
       let balance = data[0].balance
       if(balance < tempTotalAmount){
