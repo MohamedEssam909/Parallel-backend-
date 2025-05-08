@@ -380,6 +380,8 @@ app.post('/createAccount', upload.single('profile_picture'), async (req, res) =>
         message: `Missing required fields: ${missingFields.join(', ')}`
       });
     }
+	  
+const backendURL = 'https://parallel-backend-production.up.railway.app'; // Replace this with your actual backend URL
 
     // Format data
     const accountData = {
@@ -391,7 +393,7 @@ app.post('/createAccount', upload.single('profile_picture'), async (req, res) =>
       passcode: req.body.passcode,
       subscription_type: req.body.subscription_type,
       expiry_date: `${req.body.expiry_year}-${req.body.expiry_month.padStart(2, '0')}-01`,
-      profile_picture: req.file ? `uploads/${req.file.filename}` : null
+      profile_picture: req.file ? `${backendURL}/uploads/${req.file.filename}` : null
     };
 
     console.log('Processed Account Data:', accountData);
