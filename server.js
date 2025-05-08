@@ -5,7 +5,6 @@ const mysql = require("mysql2/promise"); // Promise-based version
 const cors = require("cors");
 const app = express();
 const PORT = process.env.PORT || 3000;
-
 app.use(express.static("public"));
 app.use(express.json());
 app.use(cors());
@@ -138,43 +137,98 @@ async function connectDB() {
 
 
     // Handle signup
+
+    // Handle signup
     app.post("/signup", async (req, res) => {
-
-    const { user_id, username, password, fname, lname, country } = req.body;
-
-let dbToUse;
-//let currentDB; 
-
-if (R1Countries.includes(country)) {
-  dbToUse = db1;
-  //currentDB = 'db1'
-} else if (R2Countries.includes(country)) {
-  dbToUse = db2;
-  //currentDB = 'db2'
-} else if (R3Countries.includes(country)) {
-  dbToUse = db3;
-  //currentDB = 'db3'
-} else {
-  return res.json({ message: "Country not supported for our system."});
-}
-    //localStorage.setItem('currentDB' , JSON.stringify(currentDB));
-
-      if (!/^\d{9}$/.test(user_id)) {
-        return res.json({ message: "User ID must be a 9-digit number." });
+      const {
+        user_id, username, password,
+        fname, minit, lname, country,
+        phone_num, gender, date_birth
+      } = req.body;
+    
+      if (!user_id || !username || !password || !fname || !lname || !country || !gender || !date_birth) {
+        return res.status(400).json({ message: "All required fields must be filled" });
+      }
+    
+      if (user_id < 100000000 || user_id > 999999999) {
+        return res.status(400).json({ message: "User ID must be a 9-digit number" });
       }
 
-      const query = "INSERT INTO user (user_id, username, password, email_verified) VALUES (?, ?, ?, 1)";
+ let dbToUse;
 
-      try {
-        const [result] = await dbToUse.execute(query, [user_id, username, password]);
-        res.json({ message: "Account created successfully!" });
-      } catch (err) {
-        console.error(err);
-        res.json({ message: "Signup failed. User ID or username may already exist." });
-      }
+  if (R1Countries.includes(country)) {
+    dbToUse = db1;
+  } else if (R2Countries.includes(country)) {
+    dbToUse = db2;
+  } else if (R3Countries.includes(country)) {
+    dbToUse = db3;
+  } else {
+    return res.status(400).json({ message: "Country not supported for our system." });
+  }
+
+  let centralDb;
+
+  try {
+    await dbToUse.beginTransaction();
+    centralDb = await mysql.createConnection(dbConfig_central);
+    await centralDb.beginTransaction();
+
+    await dbToUse.execute(
+      "INSERT INTO user (user_id, username, password, email_verified) VALUES (?, ?, ?, 1)",
+      [user_id, username, password]
+    );
+
+    await centralDb.execute(
+      `INSERT INTO person_IdentityInfo (person_id, fname, minit, lname, phone_num, address, country)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [user_id, fname, minit || null, lname, phone_num || null, null, country]
+    );
+    await centralDb.execute(
+      `INSERT INTO seller (seller_id, store_name, business_email, verification_level, joined_date)
+       VALUES (?, ?, ?, ?, ?)`,
+      [user_id, fname, `${fname}@thunder.com`, "basic", new Date()]
+    );
+    
+    await centralDb.execute(
+      `INSERT INTO person_ProfileInfo (person_id, gender, date_birth)
+       VALUES (?, ?, ?)`,
+      [user_id, gender, date_birth]
+    );
+
+    // Commit both transactions
+    await dbToUse.commit();
+    await centralDb.commit();
+
+    return res.status(201).json({
+      success: true,
+      message: "User created successfully!",
+      user_id: user_id
     });
 
+  } catch (error) {
+    console.error("Signup error:", error);
 
+    // Rollback if any error
+    if (dbToUse) await dbToUse.rollback();
+    if (centralDb) await centralDb.rollback();
+
+    // Handle duplicate user
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({
+        success: false,
+        message: "Signup failed. User ID or username may already exist."
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Signup failed. Please try again.",
+      error: error.message
+    });
+  }
+});
+
+    
   } catch (error) {
     console.error("Database connection failed:", error);
   }
@@ -261,6 +315,143 @@ async function connectDB2() {
     console.error("Database connection failed:", error);
   }
 
+
+
+  app.post('/deposit', async (req, res) => {
+    const { user_id, amount } = req.body;
+    
+    try {
+      const db = await mysql.createConnection(dbConfig_central);
+      // Update balance
+      const [result] = await db.execute(
+        `UPDATE account SET balance = balance + ? WHERE person_id = ?`,
+        [amount, user_id]
+      );
+      
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ success: false, message: 'Account not found' });
+      }
+      
+      res.json({ success: true, message: 'Funds added successfully' });
+    } catch (error) {
+      console.error('Error depositing funds:', error);
+      res.status(500).json({ success: false, message: 'Error depositing funds' });
+    }
+  });
+
+    
+  const multer = require('multer');
+const path = require('path');
+
+// Configure file storage
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'public/uploads/');
+  },
+  filename: (req, file, cb) => {
+    cb(null, `profile-${Date.now()}${path.extname(file.originalname)}`);
+  }
+});
+
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
+
+app.post('/createAccount', upload.single('profile_picture'), async (req, res) => {
+  console.log('Request Body:', req.body);
+  console.log('Uploaded File:', req.file);
+
+  try {
+    // Validate required fields
+    const requiredFields = [
+      'person_id', 'bank_name', 'card_num', 
+      'card_type', 'passcode', 'subscription_type',
+      'expiry_month', 'expiry_year'
+    ];
+    
+    const missingFields = requiredFields.filter(field => !req.body[field]);
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Missing required fields: ${missingFields.join(', ')}`
+      });
+    }
+
+    // Format data
+    const accountData = {
+      account_id: `ACC${Math.floor(100000000000 + Math.random() * 900000000000)}`,
+      person_id: req.body.person_id,
+      bank_name: req.body.bank_name,
+      card_num: req.body.card_num.replace(/\s+/g, ''),
+      card_type: req.body.card_type,
+      passcode: req.body.passcode,
+      subscription_type: req.body.subscription_type,
+      expiry_date: `${req.body.expiry_year}-${req.body.expiry_month.padStart(2, '0')}-01`,
+      profile_picture: req.file ? `/uploads/${req.file.filename}` : null
+    };
+
+    console.log('Processed Account Data:', accountData);
+
+    // Database operation
+    const db = await mysql.createConnection(dbConfig_central);
+    
+    try {
+      await db.beginTransaction();
+
+      // Check if user exists
+      const [user] = await db.execute(
+        'SELECT 1 FROM person_IdentityInfo WHERE person_id = ?', 
+        [accountData.person_id]
+      );
+      
+      if (user.length === 0) {
+        throw new Error('User does not exist');
+      }
+
+      // Insert account
+      await db.execute(
+        `INSERT INTO account (
+          account_id, person_id, bank_name, card_num, 
+          card_type, passcode, subscription_type, 
+          expiry_date, profile_picture, balance
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.00)`,
+        Object.values(accountData)
+      );
+
+      await db.commit();
+      
+      return res.json({ 
+        success: true, 
+        message: 'Account created successfully',
+        account_id: accountData.account_id
+      });
+
+    } catch (dbError) {
+      await db.rollback();
+      console.error('Database Error:', dbError);
+      
+      // Handle specific error codes
+      if (dbError.code === 'ER_DUP_ENTRY') {
+        throw new Error('Account already exists for this user');
+      }
+      if (dbError.code === 'ER_NO_REFERENCED_ROW_2') {
+        throw new Error('User does not exist in our system');
+      }
+      throw dbError;
+    } finally {
+      await db.end();
+    }
+
+  } catch (error) {
+    console.error('Account Creation Error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Account creation failed',
+      error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
 
 
 
@@ -371,13 +562,14 @@ async function connectDB2() {
       `;
   
       const countQuery = `
-        SELECT COUNT(*) as total
-        FROM item_freq f
-        JOIN item_infreq i ON f.item_id = i.item_id
-        JOIN category c ON i.category_id = c.category_id
-        JOIN seller s ON i.seller_id = s.seller_id
-        ${whereClause}
-      `;
+      SELECT COUNT(DISTINCT f.item_id) as total
+      FROM item_freq f
+      JOIN item_infreq i ON f.item_id = i.item_id
+      JOIN category c ON i.category_id = c.category_id
+      JOIN seller s ON i.seller_id = s.seller_id
+      JOIN have h ON f.item_id = h.item_id
+      ${whereClause} AND h.type = 'to_be_sold'
+    `;
   
       const categoryQuery = `
         SELECT DISTINCT c.main_cat_name
@@ -426,36 +618,6 @@ async function connectDB2() {
       res.status(500).json({ error: err.message });
     }
   });
-  
-  app.get('/items/price-range', async (req, res) => {
-    try {
-      const db = await mysql.createConnection(dbConfig_central);
-      const { category } = req.query;
-  
-      let query = `
-        SELECT 
-          MIN(IFNULL(i.discount_price, f.actual_price)) as min_price,
-          MAX(IFNULL(i.discount_price, f.actual_price)) as max_price
-        FROM item_freq f
-        JOIN item_infreq i ON f.item_id = i.item_id
-        JOIN category c ON i.category_id = c.category_id
-      `;
-  
-      const params = [];
-      if (category) {
-        query += ` WHERE LOWER(c.main_cat_name) LIKE ?`;
-        params.push(`%${category.toLowerCase()}%`);
-      }
-  
-      const [results] = await db.query(query, params);
-      res.json(results[0]);
-      await db.end();
-    } catch (err) {
-      console.error("❌ Price range query error:", err);
-      res.status(500).json({ error: err.message });
-    }
-  });
-  
   app.get('/items/related', async (req, res) => {
     try {
       const db = await mysql.createConnection(dbConfig_central);
@@ -486,7 +648,7 @@ async function connectDB2() {
       res.status(500).json({ error: err.message });
     }
   });
-  
+
   app.get('/user/balance', async (req, res) => {
     try {
       const db = await mysql.createConnection(dbConfig_central);
@@ -518,7 +680,7 @@ async function connectDB2() {
       );
       //console.log(buyerAccountResult[0][0].account_id)
       const results = await db.query(
-        `SELECT * FROM railway.transaction where account_id = ?`,
+        `SELECT * FROM transaction where account_id = ? AND transaction_type = 'Invoice'`,
         [buyerAccountResult[0][0].account_id]
       );
       //console.log(results)
@@ -536,7 +698,7 @@ async function connectDB2() {
       const {transactionId} = req.query;
 
       const transactionResult = await db.query(
-        `SELECT * FROM railway.transaction where transaction_id = ?`,
+        `SELECT * FROM transaction where transaction_id = ?`,
         [transactionId]
       );
       //console.log(transactionResult[0][0])
@@ -562,6 +724,26 @@ async function connectDB2() {
       //console.log(buyerAccountInfoResult[0][0])
       
       res.json(buyerAccountInfoResult[0][0]);
+
+      await db.end();
+    } catch (err) {
+      console.error("❌ Related products query error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+  /////selleraccount
+  app.get('/selleraccount', async (req, res) => {
+    try {
+      const db = await mysql.createConnection(dbConfig_central);
+      const {user_id} = req.query;
+
+      const sellerAccountInfoResult = await db.query(
+        `SELECT store_name FROM railway.seller where seller_id = ?`,
+        [user_id]
+      );
+      //console.log(buyerAccountInfoResult[0][0])
+      
+      res.json(sellerAccountInfoResult[0][0].store_name);
 
       await db.end();
     } catch (err) {
@@ -627,10 +809,10 @@ async function connectDB2() {
                 c.price_at_purchase,
                 c.quantity,
                 s.store_name  
-		     FROM railway.contains c
-         join railway.item_freq i on i.item_id = c.item_id
-         join railway.item_infreq f on i.item_id = f.item_id
-         join railway.seller s on s.seller_id = f.seller_id
+		     FROM contains c
+         join item_freq i on i.item_id = c.item_id
+         join item_infreq f on i.item_id = f.item_id
+         join seller s on s.seller_id = f.seller_id
          where order_id = ?`,
         [order_id]
       );
@@ -649,7 +831,7 @@ async function connectDB2() {
       const {order_id} = req.query;
 
       const paymentInfoResult = await db2.query(
-        `SELECT * FROM region_3.payment where order_id = ?`,
+        `SELECT * FROM payment where order_id = ?`,
         [order_id]
       );
       res.json(paymentInfoResult[0]);
@@ -662,14 +844,153 @@ async function connectDB2() {
   });
 
 
+//Manage Listings
 
-  
+app.get('/items/list', async (req, res) => {
+  try {
+    const db = await mysql.createConnection(dbConfig_central);
+    const sellerId = req.query.seller_id;
+
+    const [items] = await db.query(`
+      SELECT 
+        i.item_id, i.name, i.image, i.actual_price, i.stock_quantity,
+        ii.tax_rate, ii.warranty_period, ii.discount_price,
+        c.sub_cat_name AS category
+      FROM item_freq i
+      JOIN item_infreq ii ON i.item_id = ii.item_id
+      JOIN category c ON ii.category_id = c.category_id
+      JOIN account a ON a.account_id = (SELECT account_id FROM account WHERE person_id = ? LIMIT 1)
+      JOIN have h ON h.item_id = i.item_id AND h.account_id = a.account_id
+      WHERE h.type = 'to_be_sold'
+    `, [sellerId]);
+
+    res.json(items);
+  } catch (err) {
+    console.error('Error fetching seller items:', err);
+    res.status(500).json({ message: 'Failed to fetch items' });
+  }
+});
+
+
+app.put('/items/update/:itemId', async (req, res) => {
+  try {
+    const db = await mysql.createConnection(dbConfig_central);
+    const itemId = parseInt(req.params.itemId);
+    const {
+      itemName,
+      imageUrl,
+      price,
+      discount,
+      stockQuantity,
+      warranty,
+      taxRate,
+      category
+    } = req.body;
+
+    // Get category_id if category name is updated
+    let categoryId = null;
+    if (category) {
+      const [categoryResult] = await db.query(
+        'SELECT category_id FROM category WHERE sub_cat_name = ?',
+        [category]
+      );
+      if (!categoryResult.length) {
+        return res.status(400).json({ message: 'Invalid category' });
+      }
+      categoryId = categoryResult[0].category_id;
+    }
+
+    // Prepare values
+    const actualPrice = price !== undefined ? parseFloat(price) : null;
+    const validatedDiscount = discount !== undefined ? Math.min(100, Math.max(0, parseFloat(discount))) : null;
+    const discountPrice = validatedDiscount !== null && actualPrice !== null
+      ? parseFloat((actualPrice * (1 - validatedDiscount / 100)).toFixed(2))
+      : null;
+
+    const validatedTaxRate = taxRate !== undefined ? Math.min(100, Math.max(0, parseFloat(taxRate))) : null;
+    const validatedWarranty = warranty !== undefined ? parseInt(warranty) : null;
+
+    await db.beginTransaction();
+
+    // Update item_freq
+    const itemFreqQuery = `
+      UPDATE item_freq
+      SET ${itemName ? 'name = ?,' : ''} 
+          ${imageUrl ? 'image = ?,' : ''} 
+          ${price !== undefined ? 'actual_price = ?,' : ''} 
+          ${stockQuantity !== undefined ? 'stock_quantity = ?,' : ''}
+          name = name -- dummy to end trailing comma
+      WHERE item_id = ?
+    `;
+    const itemFreqValues = [
+      ...(itemName ? [itemName] : []),
+      ...(imageUrl ? [imageUrl] : []),
+      ...(price !== undefined ? [actualPrice] : []),
+      ...(stockQuantity !== undefined ? [stockQuantity] : []),
+      itemId
+    ];
+    await db.query(itemFreqQuery, itemFreqValues);
+
+    // Update item_infreq
+    const itemInfreqQuery = `
+      UPDATE item_infreq
+      SET 
+        ${taxRate !== undefined ? 'tax_rate = ?,' : ''}
+        ${warranty !== undefined ? 'warranty_period = ?,' : ''}
+        ${discountPrice !== null ? 'discount_price = ?,' : ''}
+        ${categoryId !== null ? 'category_id = ?,' : ''}
+        item_id = item_id
+      WHERE item_id = ?
+    `;
+    const itemInfreqValues = [
+      ...(taxRate !== undefined ? [validatedTaxRate] : []),
+      ...(warranty !== undefined ? [validatedWarranty] : []),
+      ...(discountPrice !== null ? [discountPrice] : []),
+      ...(categoryId !== null ? [categoryId] : []),
+      itemId
+    ];
+    await db.query(itemInfreqQuery, itemInfreqValues);
+
+    await db.commit();
+    res.json({ message: 'Item updated successfully' });
+
+  } catch (error) {
+    if (db?.rollback) await db.rollback();
+    console.error('Error updating item:', error);
+    res.status(500).json({ message: 'Failed to update item', error: error.message });
+  }
+});
+
+
+app.delete('/items/delete/:itemId', async (req, res) => {
+  try {
+    const db = await mysql.createConnection(dbConfig_central);
+    const itemId = parseInt(req.params.itemId);
+
+    await db.beginTransaction();
+
+    // Delete from 'have'
+    await db.query('DELETE FROM have WHERE item_id = ?', [itemId]);
+
+    // Delete from 'item_infreq'
+    await db.query('DELETE FROM item_infreq WHERE item_id = ?', [itemId]);
+
+    // Delete from 'item_freq'
+    await db.query('DELETE FROM item_freq WHERE item_id = ?', [itemId]);
+
+    await db.commit();
+    res.json({ message: 'Item deleted successfully' });
+  } catch (error) {
+    if (db?.rollback) await db.rollback();
+    console.error('Error deleting item:', error);
+    res.status(500).json({ message: 'Failed to delete item', error: error.message });
+  }
+});
 
 
   /////
   app.post('/orders/place', async (req, res) => {
     const db = await mysql.createConnection(dbConfig_central);
-    
     
     const userCountryResult = await db.query(
       `SELECT country FROM person_IdentityInfo WHERE person_id = ?`,
@@ -755,7 +1076,7 @@ async function connectDB2() {
 
         const itemTax = itemPrice * (item.tax_rate / 100 || 0);
         totalTax += itemTax;
-        console.log(item)
+        //console.log(item)
   
         // Deduct stock quantity
         if (product[0].stock_quantity < item.quantity) {
@@ -931,6 +1252,8 @@ async function connectDB2() {
     }
   });
   
+
+
   app.post('/items/create', async (req, res) => {
     try {
       const db = await mysql.createConnection(dbConfig_central);
@@ -978,7 +1301,7 @@ async function connectDB2() {
            VALUES (?, ?, ?, ?, ?, ?)`,
           [stockQuantity, actualPrice, itemName, imageUrl, 0, 0]
         )
-        console.log(result)
+        //console.log(result)
         const insertedItemId = result[0].insertId;
 
       // Insert into item_infreq with all fields explicitly specified
@@ -1029,6 +1352,12 @@ async function connectDB2() {
     }
   });
 
+  
+  
+
+
+
+
   // Helper function to get next available item_id
   async function getNextItemId(db) {
     const [maxIdResult] = await db.query('SELECT MAX(item_id) as maxId FROM item_freq');
@@ -1047,13 +1376,58 @@ async function connectDB2() {
       res.status(500).json({ message: 'Failed to fetch categories' });
     }
   });
+
+
+
+
+  app.get('/reports/top-sellers', async (req, res) => {
+    try {
+      const db = await mysql.createConnection(dbConfig_central);
+      const [results] = await db.execute(`
+        SELECT s.seller_id, s.store_name, s.business_email, SUM(sp.amount) AS total_earnings
+        FROM seller_payout sp
+        JOIN seller s ON s.seller_id = sp.seller_id
+        GROUP BY sp.seller_id
+        ORDER BY total_earnings DESC
+        LIMIT 10;
+      `);
+      res.json(results);
+    } catch (error) {
+      console.error('Query error:', error);
+      res.status(500).json({ error: 'Database query failed' });
+    }
+  });
+
+  app.get('/reports/most-reviewed', async (req, res) => {
+    try {
+      const db = await mysql.createConnection(dbConfig_central);
+      const [results] = await db.execute(`
+        SELECT i.name, COUNT(r.item_id) AS review_count
+        FROM item_freq i
+        JOIN regular_reviews r ON i.item_id = r.item_id
+        GROUP BY i.item_id
+        HAVING review_count >= 25
+        ORDER BY review_count DESC;
+      `);
+      res.json(results);
+    } catch (err) {
+      console.error('Query error:', err);
+      res.status(500).json({ error: 'Database error' });
+    }
+  });
+  
+
+
+
 }
 
 async function startServer() {
   try {
     await connectDB();
     await connectDB2();
-    app.listen(PORT, () => console.log(`Listening on port ${PORT}`));
+    app.listen(PORT, () => {
+      console.log(`Server running at http://localhost:${PORT}`);
+    });
   } catch (error) {
     console.error('Failed to start server:', error);
   }
