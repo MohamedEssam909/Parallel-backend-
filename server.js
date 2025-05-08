@@ -4,6 +4,8 @@ const express = require("express");
 const mysql = require("mysql2/promise"); // Promise-based version
 const cors = require("cors");
 const app = express();
+const path = require('path');
+
 const PORT = process.env.PORT || 3000;
 app.use(express.static("public"));
 app.use(express.json());
